@@ -119,6 +119,8 @@ struct aw36515_flash {
 	struct pinctrl *aw36515_hwen_pinctrl;
 	struct pinctrl_state *aw36515_hwen_high;
 	struct pinctrl_state *aw36515_hwen_low;
+	/* Last level selected through the torchbrightness sysfs interface. */
+	unsigned int torchbrightness;
 #if IS_ENABLED(CONFIG_MTK_FLASHLIGHT)
 	struct flashlight_device_id flash_dev_id[AW36515_LED_MAX];
 #endif
@@ -848,6 +850,10 @@ static int aw36515_probe(struct i2c_client *client,
 	rval = aw36515_parse_dt(flash);
 
 	i2c_set_clientdata(client, flash);
+	rval = device_create_file(&client->dev, &dev_attr_torchbrightness);
+	if (rval)
+		dev_warn(&client->dev,
+			 "failed to create torchbrightness sysfs: %d\\n", rval);
 
 	pr_info("%s:%d", __func__, __LINE__);
 	return 0;
@@ -858,6 +864,7 @@ static int aw36515_remove(struct i2c_client *client)
 	struct aw36515_flash *flash = i2c_get_clientdata(client);
 	unsigned int i;
 
+	device_remove_file(&client->dev, &dev_attr_torchbrightness);
 	for (i = AW36515_LED0; i < AW36515_LED_MAX; i++) {
 		v4l2_device_unregister_subdev(&flash->subdev_led[i]);
 		v4l2_ctrl_handler_free(&flash->ctrls_led[i]);
