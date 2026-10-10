@@ -13,6 +13,7 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <linux/pm_runtime.h>
+#include <linux/kstrtox.h>
 
 #if IS_ENABLED(CONFIG_MTK_FLASHLIGHT)
 #include "flashlight-core.h"
@@ -119,7 +120,7 @@ struct aw36515_flash {
 	struct pinctrl *aw36515_hwen_pinctrl;
 	struct pinctrl_state *aw36515_hwen_high;
 	struct pinctrl_state *aw36515_hwen_low;
-	/* Last level selected through the torchbrightness sysfs interface. */
+	/* Last level selected through sysfs: 0=off, 1..7=on. */
 	unsigned int torchbrightness;
 #if IS_ENABLED(CONFIG_MTK_FLASHLIGHT)
 	struct flashlight_device_id flash_dev_id[AW36515_LED_MAX];
@@ -128,6 +129,7 @@ struct aw36515_flash {
 
 /* define usage count */
 static int use_count;
+static DEFINE_MUTEX(aw36515_driver_lock);
 
 static struct aw36515_flash *aw36515_flash_data;
 
@@ -702,24 +704,26 @@ static int aw36515_set_driver(int set)
 {
 	int ret = 0;
 
-	/* set chip and usage count */
-	//mutex_lock(&aw36515_mutex);
+	mutex_lock(&aw36515_driver_lock);
 	if (set) {
-		if (!use_count)
+		if (!use_count) {
 			ret = aw36515_init(aw36515_flash_data);
+			if (ret < 0)
+				goto out;
+		}
 		use_count++;
 		pr_debug("Set driver: %d\n", use_count);
 	} else {
-		use_count--;
-		if (!use_count)
-			ret = aw36515_uninit(aw36515_flash_data);
-		if (use_count < 0)
-			use_count = 0;
+		if (use_count > 0) {
+			use_count--;
+			if (!use_count)
+				ret = aw36515_uninit(aw36515_flash_data);
+		}
 		pr_debug("Unset driver: %d\n", use_count);
 	}
-	//mutex_unlock(&aw36515_mutex);
-
-	return 0;
+out:
+	mutex_unlock(&aw36515_driver_lock);
+	return ret;
 }
 
 static ssize_t aw36515_strobe_store(struct flashlight_arg arg)
@@ -828,6 +832,8 @@ static ssize_t torchbrightness_store(struct device *dev,
 {
 	struct aw36515_flash *flash = dev_get_drvdata(dev);
 	unsigned int level;
+	unsigned int old_level;
+	bool was_active;
 	int ret;
 
 	if (!flash)
@@ -839,14 +845,28 @@ static ssize_t torchbrightness_store(struct device *dev,
 	if (level >= ARRAY_SIZE(aw36515_torch_levels_ua))
 		return -EINVAL;
 
-	/* Serialize I2C register updates with the driver's V4L2 controls. */
 	mutex_lock(&flash->lock);
+	old_level = flash->torchbrightness;
+	was_active = old_level != 0;
+
+	if (level && !was_active) {
+		/*
+		 * The flashlight core raises HWEN on the first driver reference.
+		 * Keep a reference for as long as sysfs torch mode is active.
+		 */
+		ret = aw36515_set_driver(1);
+		if (ret)
+			goto out_unlock;
+	}
+
 	if (!level) {
 		ret = aw36515_enable_ctrl(flash, AW36515_LED0, false);
 		if (!ret) {
 			flash->led_mode = V4L2_FLASH_LED_MODE_NONE;
 			ret = aw36515_mode_ctrl(flash);
 		}
+		if (!ret && was_active)
+			ret = aw36515_set_driver(0);
 	} else {
 		ret = aw36515_torch_brt_ctrl(flash, AW36515_LED0,
 					     aw36515_torch_levels_ua[level]);
@@ -856,11 +876,14 @@ static ssize_t torchbrightness_store(struct device *dev,
 		}
 		if (!ret)
 			ret = aw36515_enable_ctrl(flash, AW36515_LED0, true);
+		if (ret && !was_active)
+			aw36515_set_driver(0);
 	}
+
 	if (!ret)
 		flash->torchbrightness = level;
+out_unlock:
 	mutex_unlock(&flash->lock);
-
 	return ret ? ret : count;
 }
 static DEVICE_ATTR_RW(torchbrightness);
