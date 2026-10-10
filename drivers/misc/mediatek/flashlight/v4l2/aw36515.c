@@ -725,7 +725,6 @@ out:
 	mutex_unlock(&aw36515_driver_lock);
 	return ret;
 }
-
 static ssize_t aw36515_strobe_store(struct flashlight_arg arg)
 {
 	aw36515_set_driver(1);
