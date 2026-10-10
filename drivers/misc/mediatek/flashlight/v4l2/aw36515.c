@@ -859,8 +859,9 @@ static ssize_t torchbrightness_store(struct device *dev,
 	}
 
 	if (!level) {
-		ret = aw36515_enable_ctrl(flash, AW36515_LED0, false);
-		if (!ret) {
+		ret = was_active ?
+			aw36515_enable_ctrl(flash, AW36515_LED0, false) : 0;
+		if (!ret && was_active) {
 			flash->led_mode = V4L2_FLASH_LED_MODE_NONE;
 			ret = aw36515_mode_ctrl(flash);
 		}
