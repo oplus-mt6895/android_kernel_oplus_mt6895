@@ -796,6 +796,75 @@ err_node_put:
 	return -EINVAL;
 }
 
+
+/*
+ * LED0 torch current presets in microamps. Values are aligned to the
+ * AW36515's 1.96 mA torch-current step.
+ * 0 disables the torch; 1..7 select progressively higher current levels.
+ */
+static const unsigned int aw36515_torch_levels_ua[] = {
+	0, 24500, 49980, 75460, 100940, 124460, 149940, 175420,
+};
+
+static ssize_t torchbrightness_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct aw36515_flash *flash = dev_get_drvdata(dev);
+	unsigned int level;
+
+	if (!flash)
+		return -ENODEV;
+
+	mutex_lock(&flash->lock);
+	level = flash->torchbrightness;
+	mutex_unlock(&flash->lock);
+
+	return sysfs_emit(buf, "%u\n", level);
+}
+
+static ssize_t torchbrightness_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct aw36515_flash *flash = dev_get_drvdata(dev);
+	unsigned int level;
+	int ret;
+
+	if (!flash)
+		return -ENODEV;
+
+	ret = kstrtouint(buf, 0, &level);
+	if (ret)
+		return ret;
+	if (level >= ARRAY_SIZE(aw36515_torch_levels_ua))
+		return -EINVAL;
+
+	/* Serialize I2C register updates with the driver's V4L2 controls. */
+	mutex_lock(&flash->lock);
+	if (!level) {
+		ret = aw36515_enable_ctrl(flash, AW36515_LED0, false);
+		if (!ret) {
+			flash->led_mode = V4L2_FLASH_LED_MODE_NONE;
+			ret = aw36515_mode_ctrl(flash);
+		}
+	} else {
+		ret = aw36515_torch_brt_ctrl(flash, AW36515_LED0,
+					     aw36515_torch_levels_ua[level]);
+		if (!ret) {
+			flash->led_mode = V4L2_FLASH_LED_MODE_TORCH;
+			ret = aw36515_mode_ctrl(flash);
+		}
+		if (!ret)
+			ret = aw36515_enable_ctrl(flash, AW36515_LED0, true);
+	}
+	if (!ret)
+		flash->torchbrightness = level;
+	mutex_unlock(&flash->lock);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(torchbrightness);
+
 static int aw36515_probe(struct i2c_client *client,
 			const struct i2c_device_id *devid)
 {
@@ -853,7 +922,7 @@ static int aw36515_probe(struct i2c_client *client,
 	rval = device_create_file(&client->dev, &dev_attr_torchbrightness);
 	if (rval)
 		dev_warn(&client->dev,
-			 "failed to create torchbrightness sysfs: %d\\n", rval);
+			 "failed to create torchbrightness sysfs: %d\n", rval);
 
 	pr_info("%s:%d", __func__, __LINE__);
 	return 0;
